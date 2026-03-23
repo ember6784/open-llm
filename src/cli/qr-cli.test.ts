@@ -6,6 +6,12 @@ const mocks = vi.hoisted(() => ({
   runtime: {
     log: vi.fn(),
     error: vi.fn(),
+    writeStdout: vi.fn((value: string) => {
+      mocks.runtime.log(value.endsWith("\n") ? value.slice(0, -1) : value);
+    }),
+    writeJson: vi.fn((value: unknown, space = 2) => {
+      mocks.runtime.log(JSON.stringify(value, null, space > 0 ? space : undefined));
+    }),
     exit: vi.fn(() => {
       throw new Error("exit");
     }),
@@ -21,7 +27,10 @@ const mocks = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock("../runtime.js", () => ({ defaultRuntime: mocks.runtime }));
+vi.mock("../runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../runtime.js")>()),
+  defaultRuntime: mocks.runtime,
+}));
 vi.mock("../config/config.js", () => ({ loadConfig: mocks.loadConfig }));
 vi.mock("../process/exec.js", () => ({ runCommandWithTimeout: mocks.runCommandWithTimeout }));
 vi.mock("./command-secret-gateway.js", () => ({
@@ -135,24 +144,16 @@ describe("registerQrCli", () => {
     };
   }
 
-  function expectLoggedSetupCode(
-    url: string,
-    auth?: {
-      token?: string;
-      password?: string;
-    },
-  ) {
+  function expectLoggedSetupCode(url: string) {
     const expected = encodePairingSetupCode({
       url,
       bootstrapToken: "bootstrap-123",
-      ...(auth?.token ? { token: auth.token } : {}),
-      ...(auth?.password ? { password: auth.password } : {}),
     });
     expect(runtime.log).toHaveBeenCalledWith(expected);
   }
 
-  function expectLoggedLocalSetupCode(auth?: { token?: string; password?: string }) {
-    expectLoggedSetupCode("ws://gateway.local:18789", auth);
+  function expectLoggedLocalSetupCode() {
+    expectLoggedSetupCode("ws://gateway.local:18789");
   }
 
   function mockTailscaleStatusLookup() {
@@ -189,7 +190,6 @@ describe("registerQrCli", () => {
     const expected = encodePairingSetupCode({
       url: "ws://gateway.local:18789",
       bootstrapToken: "bootstrap-123",
-      token: "tok",
     });
     expect(runtime.log).toHaveBeenCalledWith(expected);
     expect(qrGenerate).not.toHaveBeenCalled();
@@ -225,7 +225,7 @@ describe("registerQrCli", () => {
 
     await runQr(["--setup-code-only", "--token", "override-token"]);
 
-    expectLoggedLocalSetupCode({ token: "override-token" });
+    expectLoggedLocalSetupCode();
   });
 
   it("skips local password SecretRef resolution when --token override is provided", async () => {
@@ -237,7 +237,7 @@ describe("registerQrCli", () => {
 
     await runQr(["--setup-code-only", "--token", "override-token"]);
 
-    expectLoggedLocalSetupCode({ token: "override-token" });
+    expectLoggedLocalSetupCode();
   });
 
   it("resolves local gateway auth password SecretRefs before setup code generation", async () => {
@@ -250,7 +250,7 @@ describe("registerQrCli", () => {
 
     await runQr(["--setup-code-only"]);
 
-    expectLoggedLocalSetupCode({ password: "local-password-secret" });
+    expectLoggedLocalSetupCode();
     expect(resolveCommandSecretRefsViaGateway).not.toHaveBeenCalled();
   });
 
@@ -264,7 +264,7 @@ describe("registerQrCli", () => {
 
     await runQr(["--setup-code-only"]);
 
-    expectLoggedLocalSetupCode({ password: "password-from-env" });
+    expectLoggedLocalSetupCode();
     expect(resolveCommandSecretRefsViaGateway).not.toHaveBeenCalled();
   });
 
@@ -279,7 +279,7 @@ describe("registerQrCli", () => {
 
     await runQr(["--setup-code-only"]);
 
-    expectLoggedLocalSetupCode({ token: "token-123" });
+    expectLoggedLocalSetupCode();
     expect(resolveCommandSecretRefsViaGateway).not.toHaveBeenCalled();
   });
 
@@ -293,7 +293,7 @@ describe("registerQrCli", () => {
 
     await runQr(["--setup-code-only"]);
 
-    expectLoggedLocalSetupCode({ password: "inferred-password" });
+    expectLoggedLocalSetupCode();
     expect(resolveCommandSecretRefsViaGateway).not.toHaveBeenCalled();
   });
 
@@ -342,7 +342,6 @@ describe("registerQrCli", () => {
     const expected = encodePairingSetupCode({
       url: "wss://remote.example.com:444",
       bootstrapToken: "bootstrap-123",
-      token: "remote-tok",
     });
     expect(runtime.log).toHaveBeenCalledWith(expected);
     expect(resolveCommandSecretRefsViaGateway).toHaveBeenCalledWith(
@@ -386,7 +385,6 @@ describe("registerQrCli", () => {
     const expected = encodePairingSetupCode({
       url: "wss://remote.example.com:444",
       bootstrapToken: "bootstrap-123",
-      token: "remote-tok",
     });
     expect(runtime.log).toHaveBeenCalledWith(expected);
   });

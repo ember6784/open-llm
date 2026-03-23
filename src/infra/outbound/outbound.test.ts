@@ -2,7 +2,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { discordPlugin } from "../../../extensions/discord/src/channel.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import { setDefaultChannelPluginRegistryForTests } from "../../commands/channel-test-helpers.js";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -44,9 +43,7 @@ import {
 import { runResolveOutboundTargetCoreTests } from "./targets.shared-test.js";
 
 beforeEach(() => {
-  setActivePluginRegistry(
-    createTestRegistry([{ pluginId: "discord", plugin: discordPlugin, source: "test" }]),
-  );
+  setActivePluginRegistry(createTestRegistry([]));
 });
 
 describe("delivery-queue", () => {
@@ -507,12 +504,16 @@ describe("delivery-queue", () => {
       expect(result.skippedMaxRetries).toBe(0);
       expect(result.deferredBackoff).toBe(0);
 
-      // All entries should still be in the queue.
+      // All entries should still be in the queue (retryCount < MAX_RETRIES).
       const remaining = await loadPendingDeliveries(tmpDir);
       expect(remaining).toHaveLength(3);
 
+      // retryCount should be incremented on all deferred entries so they
+      // eventually reach MAX_RETRIES and are pruned rather than looping forever.
+      expect(remaining.every((e) => e.retryCount === 1)).toBe(true);
+
       // Should have logged a warning about deferred entries.
-      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("deferred to next restart"));
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("deferred to next startup"));
     });
 
     it("defers entries until backoff becomes eligible", async () => {
@@ -1311,21 +1312,29 @@ describe("normalizeOutboundPayloadsForJson", () => {
       {
         input: [
           { text: "hi" },
-          { text: "photo", mediaUrl: "https://x.test/a.jpg" },
+          { text: "photo", mediaUrl: "https://x.test/a.jpg", audioAsVoice: true },
           { text: "multi", mediaUrls: ["https://x.test/1.png"] },
         ],
         expected: [
-          { text: "hi", mediaUrl: null, mediaUrls: undefined, channelData: undefined },
+          {
+            text: "hi",
+            mediaUrl: null,
+            mediaUrls: undefined,
+            audioAsVoice: undefined,
+            channelData: undefined,
+          },
           {
             text: "photo",
             mediaUrl: "https://x.test/a.jpg",
             mediaUrls: ["https://x.test/a.jpg"],
+            audioAsVoice: true,
             channelData: undefined,
           },
           {
             text: "multi",
             mediaUrl: null,
             mediaUrls: ["https://x.test/1.png"],
+            audioAsVoice: undefined,
             channelData: undefined,
           },
         ],
@@ -1341,6 +1350,7 @@ describe("normalizeOutboundPayloadsForJson", () => {
             text: "",
             mediaUrl: null,
             mediaUrls: ["https://x.test/a.png", "https://x.test/b.png"],
+            audioAsVoice: undefined,
             channelData: undefined,
           },
         ],
@@ -1365,7 +1375,9 @@ describe("normalizeOutboundPayloadsForJson", () => {
       { text: "Reasoning:\n_step_", isReasoning: true },
       { text: "final answer" },
     ]);
-    expect(normalized).toEqual([{ text: "final answer", mediaUrl: null, mediaUrls: undefined }]);
+    expect(normalized).toEqual([
+      { text: "final answer", mediaUrl: null, mediaUrls: undefined, audioAsVoice: undefined },
+    ]);
   });
 });
 
