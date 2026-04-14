@@ -43,6 +43,8 @@ function createExecDryRunBatch(params: { markerPath: string }) {
         command: process.execPath,
         args: ["-e", script],
         allowInsecurePath: true,
+        timeoutMs: 60_000,
+        noOutputTimeoutMs: 60_000,
       },
     },
     {
