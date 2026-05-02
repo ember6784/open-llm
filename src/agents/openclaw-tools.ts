@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { callGateway } from "../gateway/call.js";
+import { isEmbeddedMode } from "../infra/embedded-mode.js";
 import { getActiveRuntimeWebToolsMetadata } from "../secrets/runtime.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.js";
 import type { GatewayMessageChannel } from "../utils/message-channel.js";
@@ -17,7 +18,9 @@ import { createAgentsListTool } from "./tools/agents-list-tool.js";
 import { createCanvasTool } from "./tools/canvas-tool.js";
 import type { AnyAgentTool } from "./tools/common.js";
 import { createCronTool } from "./tools/cron-tool.js";
+import { createEmbeddedCallGateway } from "./tools/embedded-gateway-stub.js";
 import { createGatewayTool } from "./tools/gateway-tool.js";
+import { createHeartbeatResponseTool } from "./tools/heartbeat-response-tool.js";
 import { createImageGenerateTool } from "./tools/image-generate-tool.js";
 import { createImageTool } from "./tools/image-tool.js";
 import { createMessageTool } from "./tools/message-tool.js";
@@ -55,7 +58,7 @@ export function createOpenClawTools(
     agentSessionKey?: string;
     agentChannel?: GatewayMessageChannel;
     agentAccountId?: string;
-    /** Delivery target (e.g. telegram:group:123:topic:456) for topic/thread routing. */
+    /** Delivery target for topic/thread routing. */
     agentTo?: string;
     /** Thread/topic identifier for routing replies to the originating thread. */
     agentThreadId?: string | number;
@@ -67,13 +70,13 @@ export function createOpenClawTools(
     sandboxed?: boolean;
     config?: OpenClawConfig;
     pluginToolAllowlist?: string[];
-    /** Current channel ID for auto-threading (Slack). */
+    /** Current channel ID for auto-threading. */
     currentChannelId?: string;
-    /** Current thread timestamp for auto-threading (Slack). */
+    /** Current thread timestamp for auto-threading. */
     currentThreadTs?: string;
-    /** Current inbound message id for action fallbacks (e.g. Telegram react). */
+    /** Current inbound message id for action fallbacks. */
     currentMessageId?: string | number;
-    /** Reply-to mode for Slack auto-threading. */
+    /** Reply-to mode for auto-threading. */
     replyToMode?: "off" | "first" | "all" | "batched";
     /** Mutable ref to track if a reply was sent (for "first" mode). */
     hasRepliedRef?: { value: boolean };
@@ -87,10 +90,14 @@ export function createOpenClawTools(
     allowMediaInvokeCommands?: boolean;
     /** Explicit agent ID override for cron/hook sessions. */
     requesterAgentIdOverride?: string;
+    /** Restrict the cron tool to self-removing this active cron job. */
+    cronSelfRemoveOnlyJobId?: string;
     /** Require explicit message targets (no implicit last-route sends). */
     requireExplicitMessageTarget?: boolean;
     /** If true, omit the message tool from the tool list. */
     disableMessageTool?: boolean;
+    /** If true, include the heartbeat response tool for structured heartbeat outcomes. */
+    enableHeartbeatTool?: boolean;
     /** If true, skip plugin tool resolution and return only shipped core tools. */
     disablePluginTools?: boolean;
     /** Trusted sender id from inbound context (not tool args). */
@@ -187,6 +194,7 @@ export function createOpenClawTools(
     config: options?.config,
     sandboxed: options?.sandboxed,
     runtimeWebSearch: runtimeWebTools?.search,
+    lateBindRuntimeConfig: true,
   });
   const webFetchTool = createWebFetchTool({
     config: options?.config,
@@ -211,6 +219,7 @@ export function createOpenClawTools(
         requesterSenderId: options?.requesterSenderId ?? undefined,
         senderIsOwner: options?.senderIsOwner,
       });
+  const heartbeatTool = options?.enableHeartbeatTool ? createHeartbeatResponseTool() : null;
   const nodesToolBase = createNodesTool({
     agentSessionKey: options?.agentSessionKey,
     agentChannel: options?.agentChannel,
@@ -227,22 +236,46 @@ export function createOpenClawTools(
     sandboxRoot: options?.sandboxRoot,
     workspaceDir,
   });
+  const embedded = isEmbeddedMode();
+  const effectiveCallGateway = embedded
+    ? createEmbeddedCallGateway()
+    : openClawToolsDeps.callGateway;
   const tools: AnyAgentTool[] = [
-    createCanvasTool({ config: options?.config }),
-    nodesTool,
-    createCronTool({
-      agentSessionKey: options?.agentSessionKey,
-    }),
-    ...(messageTool ? [messageTool] : []),
+    ...(embedded
+      ? []
+      : [
+          createCanvasTool({ config: options?.config }),
+          nodesTool,
+          createCronTool({
+            agentSessionKey: options?.agentSessionKey,
+            currentDeliveryContext: {
+              channel: options?.agentChannel,
+              to: options?.currentChannelId ?? options?.agentTo,
+              accountId: options?.agentAccountId,
+              threadId: options?.currentThreadTs ?? options?.agentThreadId,
+            },
+            ...(options?.cronSelfRemoveOnlyJobId
+              ? { selfRemoveOnlyJobId: options.cronSelfRemoveOnlyJobId }
+              : {}),
+          }),
+        ]),
+    ...(!embedded && messageTool ? [messageTool] : []),
+    ...collectPresentOpenClawTools([heartbeatTool]),
     createTtsTool({
       agentChannel: options?.agentChannel,
-      config: options?.config,
+      config: resolvedConfig,
+      agentId: sessionAgentId,
+      agentAccountId: options?.agentAccountId,
     }),
     ...collectPresentOpenClawTools([imageGenerateTool, musicGenerateTool, videoGenerateTool]),
-    createGatewayTool({
-      agentSessionKey: options?.agentSessionKey,
-      config: options?.config,
-    }),
+    ...(embedded
+      ? []
+      : [
+          createGatewayTool({
+            agentSessionKey: options?.agentSessionKey,
+            config: options?.config,
+          }),
+        ]),
     createAgentsListTool({
       agentSessionKey: options?.agentSessionKey,
       requesterAgentIdOverride: options?.requesterAgentIdOverride,
@@ -260,37 +293,43 @@ export function createOpenClawTools(
       agentSessionKey: options?.agentSessionKey,
       sandboxed: options?.sandboxed,
       config: resolvedConfig,
-      callGateway: openClawToolsDeps.callGateway,
+      callGateway: effectiveCallGateway,
     }),
     createSessionsHistoryTool({
       agentSessionKey: options?.agentSessionKey,
       sandboxed: options?.sandboxed,
       config: resolvedConfig,
-      callGateway: openClawToolsDeps.callGateway,
+      callGateway: effectiveCallGateway,
     }),
-    createSessionsSendTool({
-      agentSessionKey: options?.agentSessionKey,
-      agentChannel: options?.agentChannel,
-      sandboxed: options?.sandboxed,
-      config: resolvedConfig,
-      callGateway: openClawToolsDeps.callGateway,
-    }),
+    ...(embedded
+      ? []
+      : [
+          createSessionsSendTool({
+            agentSessionKey: options?.agentSessionKey,
+            agentChannel: options?.agentChannel,
+            sandboxed: options?.sandboxed,
+            config: resolvedConfig,
+            callGateway: openClawToolsDeps.callGateway,
+          }),
+          createSessionsSpawnTool({
+            agentSessionKey: options?.agentSessionKey,
+            agentChannel: options?.agentChannel,
+            agentAccountId: options?.agentAccountId,
+            agentTo: options?.agentTo,
+            agentThreadId: options?.agentThreadId,
+            agentGroupId: options?.agentGroupId,
+            agentGroupChannel: options?.agentGroupChannel,
+            agentGroupSpace: options?.agentGroupSpace,
+            agentMemberRoleIds: options?.agentMemberRoleIds,
+            sandboxed: options?.sandboxed,
+            config: resolvedConfig,
+            requesterAgentIdOverride: options?.requesterAgentIdOverride,
+            workspaceDir: spawnWorkspaceDir,
+          }),
+        ]),
     createSessionsYieldTool({
       sessionId: options?.sessionId,
       onYield: options?.onYield,
-    }),
-    createSessionsSpawnTool({
-      agentSessionKey: options?.agentSessionKey,
-      agentChannel: options?.agentChannel,
-      agentAccountId: options?.agentAccountId,
-      agentTo: options?.agentTo,
-      agentThreadId: options?.agentThreadId,
-      agentGroupId: options?.agentGroupId,
-      agentGroupChannel: options?.agentGroupChannel,
-      agentGroupSpace: options?.agentGroupSpace,
-      sandboxed: options?.sandboxed,
-      requesterAgentIdOverride: options?.requesterAgentIdOverride,
-      workspaceDir: spawnWorkspaceDir,
     }),
     createSubagentsTool({
       agentSessionKey: options?.agentSessionKey,

@@ -4,7 +4,7 @@ const transportState = vi.hoisted(() => ({
   lastTransport: null as { onclose?: (() => void) | undefined } | null,
 }));
 const serverState = vi.hoisted(() => ({
-  connect: vi.fn(async (_transport?: unknown) => {}),
+  connect: vi.fn(async (_transport: unknown) => {}),
   close: vi.fn(async () => {}),
 }));
 const bridgeState = vi.hoisted(() => ({
@@ -13,7 +13,7 @@ const bridgeState = vi.hoisted(() => ({
     throw new Error("close boom");
   }),
   setServer: vi.fn(),
-  handleClaudePermissionRequest: vi.fn(async (_payload?: unknown) => {}),
+  handleClaudePermissionRequest: vi.fn(async (_payload: unknown) => {}),
 }));
 
 vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
@@ -43,7 +43,7 @@ vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({
 }));
 
 vi.mock("../config/config.js", () => ({
-  loadConfig: vi.fn(() => ({})),
+  getRuntimeConfig: vi.fn(() => ({})),
 }));
 
 vi.mock("../version.js", () => ({
@@ -79,6 +79,16 @@ vi.mock("./channel-tools.js", () => ({
   registerChannelMcpTools: vi.fn(),
 }));
 
+async function waitForTransport(): Promise<{ onclose?: (() => void) | undefined }> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (transportState.lastTransport) {
+      return transportState.lastTransport;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("MCP stdio transport was not created");
+}
+
 describe("serveOpenClawChannelMcp shutdown", () => {
   const unhandledRejections: unknown[] = [];
   const onUnhandledRejection = (reason: unknown) => {
@@ -102,9 +112,9 @@ describe("serveOpenClawChannelMcp shutdown", () => {
     const { serveOpenClawChannelMcp } = await import("./channel-server.js");
 
     const servePromise = serveOpenClawChannelMcp({ verbose: false });
-    await Promise.resolve();
+    const transport = await waitForTransport();
 
-    transportState.lastTransport?.onclose?.();
+    transport.onclose?.();
     await servePromise;
     await new Promise((resolve) => setTimeout(resolve, 0));
 

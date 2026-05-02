@@ -1,5 +1,4 @@
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import { createJiti } from "jiti";
 import type { ChannelAgentTool } from "../../channels/plugins/types.core.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
@@ -9,14 +8,16 @@ import {
   optimizeImageToJpeg as optimizeImageToJpegImpl,
 } from "../../media/web-media.js";
 import type { PollInput } from "../../polls.js";
+import type { PluginModuleLoaderCache } from "../plugin-module-loader-cache.js";
+import type { PluginOrigin } from "../plugin-origin.types.js";
 import {
-  loadPluginBoundaryModuleWithJiti,
+  loadPluginBoundaryModule,
   resolvePluginRuntimeRecordByEntryBaseNames,
   resolvePluginRuntimeModulePath,
 } from "./runtime-plugin-boundary.js";
 
 type WebChannelPluginRecord = {
-  origin?: string;
+  origin?: PluginOrigin;
   rootDir?: string;
   source: string;
 };
@@ -103,12 +104,18 @@ type WebChannelHeavyRuntimeModule = {
   resolveHeartbeatRecipients: (...args: unknown[]) => unknown;
 };
 
-let cachedHeavyModulePath: string | null = null;
-let cachedHeavyModule: WebChannelHeavyRuntimeModule | null = null;
-let cachedLightModulePath: string | null = null;
-let cachedLightModule: WebChannelLightRuntimeModule | null = null;
+type WebChannelRuntimeModuleKind = "heavy" | "light";
+type CachedWebChannelRuntimeModule = {
+  modulePath: string;
+  module: WebChannelHeavyRuntimeModule | WebChannelLightRuntimeModule;
+};
 
-const jitiLoaders = new Map<boolean, ReturnType<typeof createJiti>>();
+const webChannelRuntimeModuleCache = new Map<
+  WebChannelRuntimeModuleKind,
+  CachedWebChannelRuntimeModule
+>();
+
+const moduleLoaders: PluginModuleLoaderCache = new Map();
 
 function resolveWebChannelPluginRecord(): WebChannelPluginRecord {
   return resolvePluginRuntimeRecordByEntryBaseNames(["light-runtime-api", "runtime-api"], () => {
@@ -132,43 +139,45 @@ function resolveWebChannelRuntimeModulePath(
 }
 
 function loadCurrentHeavyModuleSync(): WebChannelHeavyRuntimeModule {
-  const modulePath = resolveWebChannelRuntimeModulePath(
-    resolveWebChannelPluginRecord(),
-    "runtime-api",
-  );
-  return loadPluginBoundaryModuleWithJiti<WebChannelHeavyRuntimeModule>(modulePath, jitiLoaders);
+  const record = resolveWebChannelPluginRecord();
+  const modulePath = resolveWebChannelRuntimeModulePath(record, "runtime-api");
+  return loadPluginBoundaryModule<WebChannelHeavyRuntimeModule>(modulePath, moduleLoaders, {
+    origin: record.origin,
+  });
+}
+
+function getCachedWebChannelRuntimeModule<T extends CachedWebChannelRuntimeModule["module"]>(
+  kind: WebChannelRuntimeModuleKind,
+  modulePath: string,
+  load: () => T,
+): T {
+  const cached = webChannelRuntimeModuleCache.get(kind);
+  if (cached?.modulePath === modulePath) {
+    return cached.module as T;
+  }
+  const loaded = load();
+  webChannelRuntimeModuleCache.set(kind, { modulePath, module: loaded });
+  return loaded;
 }
 
 function loadWebChannelLightModule(): WebChannelLightRuntimeModule {
-  const modulePath = resolveWebChannelRuntimeModulePath(
-    resolveWebChannelPluginRecord(),
-    "light-runtime-api",
+  const record = resolveWebChannelPluginRecord();
+  const modulePath = resolveWebChannelRuntimeModulePath(record, "light-runtime-api");
+  return getCachedWebChannelRuntimeModule("light", modulePath, () =>
+    loadPluginBoundaryModule<WebChannelLightRuntimeModule>(modulePath, moduleLoaders, {
+      origin: record.origin,
+    }),
   );
-  if (cachedLightModule && cachedLightModulePath === modulePath) {
-    return cachedLightModule;
-  }
-  const loaded = loadPluginBoundaryModuleWithJiti<WebChannelLightRuntimeModule>(
-    modulePath,
-    jitiLoaders,
-  );
-  cachedLightModulePath = modulePath;
-  cachedLightModule = loaded;
-  return loaded;
 }
 
 async function loadWebChannelHeavyModule(): Promise<WebChannelHeavyRuntimeModule> {
   const record = resolveWebChannelPluginRecord();
   const modulePath = resolveWebChannelRuntimeModulePath(record, "runtime-api");
-  if (cachedHeavyModule && cachedHeavyModulePath === modulePath) {
-    return cachedHeavyModule;
-  }
-  const loaded = loadPluginBoundaryModuleWithJiti<WebChannelHeavyRuntimeModule>(
-    modulePath,
-    jitiLoaders,
+  return getCachedWebChannelRuntimeModule("heavy", modulePath, () =>
+    loadPluginBoundaryModule<WebChannelHeavyRuntimeModule>(modulePath, moduleLoaders, {
+      origin: record.origin,
+    }),
   );
-  cachedHeavyModulePath = modulePath;
-  cachedHeavyModule = loaded;
-  return loaded;
 }
 
 function getLightExport<K extends keyof WebChannelLightRuntimeModule>(

@@ -8,7 +8,7 @@ import {
 import { shouldBuildBundledCluster } from "./optional-bundled-clusters.mjs";
 
 const TOP_LEVEL_PUBLIC_SURFACE_EXTENSIONS = new Set([".ts", ".js", ".mts", ".cts", ".mjs", ".cjs"]);
-const NON_PACKAGED_BUNDLED_PLUGIN_DIRS = new Set(["qa-channel", "qa-lab"]);
+export const NON_PACKAGED_BUNDLED_PLUGIN_DIRS = new Set(["qa-channel", "qa-lab", "qa-matrix"]);
 const toPosixPath = (value) => value.replaceAll("\\", "/");
 
 function readBundledPluginPackageJson(packageJsonPath) {
@@ -45,10 +45,6 @@ function collectPluginSourceEntries(packageJson) {
     packageEntries = Array.from(new Set([...packageEntries, setupEntry]));
   }
   return packageEntries.length > 0 ? packageEntries : ["./index.ts"];
-}
-
-function shouldStageBundledPluginRuntimeDependencies(packageJson) {
-  return packageJson?.openclaw?.bundle?.stageRuntimeDependencies === true;
 }
 
 function collectTopLevelPublicSurfaceEntries(pluginDir) {
@@ -165,24 +161,4 @@ export function listBundledPluginPackArtifacts(params = {}) {
   }
 
   return [...artifacts].toSorted((left, right) => left.localeCompare(right));
-}
-
-export function listBundledPluginRuntimeDependencies(params = {}) {
-  const runtimeDependencies = new Set();
-
-  for (const { packageJson } of collectBundledPluginBuildEntries(params)) {
-    if (!shouldStageBundledPluginRuntimeDependencies(packageJson)) {
-      continue;
-    }
-
-    for (const dependencyName of Object.keys(packageJson?.dependencies ?? {})) {
-      runtimeDependencies.add(dependencyName);
-    }
-
-    for (const dependencyName of Object.keys(packageJson?.optionalDependencies ?? {})) {
-      runtimeDependencies.add(dependencyName);
-    }
-  }
-
-  return [...runtimeDependencies].toSorted((left, right) => left.localeCompare(right));
 }

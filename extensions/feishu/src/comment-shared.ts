@@ -1,6 +1,4 @@
 import {
-  asOptionalRecord,
-  hasNonEmptyString as sharedHasNonEmptyString,
   isRecord as sharedIsRecord,
   normalizeOptionalString,
   readStringValue,
@@ -25,22 +23,56 @@ export const normalizeString = normalizeOptionalString;
 
 export const isRecord = sharedIsRecord;
 
-export const asRecord = asOptionalRecord;
+export function formatFeishuApiError(
+  error: unknown,
+  options: {
+    includeConfigParams?: boolean;
+    includeNestedErrorLogId?: boolean;
+  } = {},
+): string {
+  if (!isRecord(error)) {
+    return typeof error === "string" ? error : JSON.stringify(error);
+  }
+  const config = isRecord(error.config) ? error.config : undefined;
+  const response = isRecord(error.response) ? error.response : undefined;
+  const responseData = isRecord(response?.data) ? response?.data : undefined;
+  const feishuLogId =
+    readString(responseData?.log_id) ||
+    (options.includeNestedErrorLogId
+      ? readString(isRecord(responseData?.error) ? responseData.error.log_id : undefined)
+      : undefined);
 
-export const hasNonEmptyString = sharedHasNonEmptyString;
+  return JSON.stringify({
+    message:
+      typeof error.message === "string"
+        ? error.message
+        : typeof error === "string"
+          ? error
+          : JSON.stringify(error),
+    code: readString(error.code),
+    method: readString(config?.method),
+    url: readString(config?.url),
+    ...(options.includeConfigParams ? { params: config?.params } : {}),
+    http_status: typeof response?.status === "number" ? response.status : undefined,
+    feishu_code:
+      typeof responseData?.code === "number" ? responseData.code : readString(responseData?.code),
+    feishu_msg: readString(responseData?.msg),
+    feishu_log_id: feishuLogId,
+  });
+}
 
-export type ParsedCommentDocumentRef = {
+type ParsedCommentDocumentRef = {
   fileType?: CommentFileType;
   fileToken?: string;
 };
 
-export type ParsedCommentMention = {
+type ParsedCommentMention = {
   userId: string;
   displayText: string;
   isBotMention: boolean;
 };
 
-export type ParsedCommentLinkedDocumentKind =
+type ParsedCommentLinkedDocumentKind =
   | CommentFileType
   | "wiki"
   | "mindnote"
@@ -48,7 +80,7 @@ export type ParsedCommentLinkedDocumentKind =
   | "base"
   | "unknown";
 
-export type ParsedCommentResolvedDocumentType = Exclude<
+type ParsedCommentResolvedDocumentType = Exclude<
   ParsedCommentLinkedDocumentKind,
   "wiki" | "unknown"
 >;
@@ -319,10 +351,6 @@ export function parseCommentContentElements(params: {
     linkedDocuments,
     botMentioned,
   };
-}
-
-export function extractCommentElementText(element: unknown): string | undefined {
-  return parseCommentContentElements({ elements: [element] }).plainText;
 }
 
 export function extractReplyText(

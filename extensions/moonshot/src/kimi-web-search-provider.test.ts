@@ -1,13 +1,50 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/provider-onboard";
-import { withEnv } from "openclaw/plugin-sdk/testing";
+import { withEnvAsync } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it } from "vitest";
-import { __testing } from "./kimi-web-search-provider.js";
+import { __testing } from "../test-api.js";
+import { createKimiWebSearchProvider } from "./kimi-web-search-provider.js";
 
 const kimiApiKeyEnv = ["KIMI_API", "KEY"].join("_");
 
+function withEnv(overrides: Record<string, string>, run: () => void): void {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(overrides)) {
+    previous.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  try {
+    run();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 describe("kimi web search provider", () => {
+  it("points missing-key users to fetch/browser alternatives", async () => {
+    await withEnvAsync({ KIMI_API_KEY: undefined, MOONSHOT_API_KEY: undefined }, async () => {
+      const provider = createKimiWebSearchProvider();
+      const tool = provider.createTool({ config: {}, searchConfig: {} });
+      if (!tool) {
+        throw new Error("Expected tool definition");
+      }
+
+      const result = await tool.execute({ query: "OpenClaw docs" });
+
+      expect(result).toMatchObject({
+        error: "missing_kimi_api_key",
+        message: expect.stringContaining("use web_fetch for a specific URL or the browser tool"),
+      });
+    });
+  });
+
   it("uses configured model and base url overrides with sane defaults", () => {
-    expect(__testing.resolveKimiModel()).toBe("kimi-k2.5");
+    expect(__testing.resolveKimiModel()).toBe("kimi-k2.6");
     expect(__testing.resolveKimiModel({ model: "kimi-k2" })).toBe("kimi-k2");
     expect(__testing.resolveKimiBaseUrl()).toBe("https://api.moonshot.ai/v1");
     expect(__testing.resolveKimiBaseUrl({ baseUrl: "https://kimi.example/v1" })).toBe(
